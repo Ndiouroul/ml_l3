@@ -1,0 +1,238 @@
+Rapport de projet : des jeux de données aux prédictions
+Rapport technique du 8 novembre 2026. Périmètre : 4 jeux de données, 4 notebooks scikit-learn, 4 modèles enregistrés, 1 application Streamlit. Les échanges précédents sur Airflow et sur le fine-tuning de modèles de langage ne sont pas couverts.
+1. Résumé
+Le projet part de quatre fichiers CSV et aboutit à une application web qui prédit avec quatre modèles entraînés dans quatre notebooks. Le travail s'est fait en trois temps.
+1. Personnalisation des notebooks : commentaires, noms de fonctions et noms de variables réécrits sans toucher à la logique. Cette étape a révélé que les notebooks étaient à moitié renommés et plantaient tels quels. Les noms ont été réconciliés, puis vérifiés par exécution.
+2. Analyse de l'application Streamlit existante : elle envoyait aux modèles des valeurs brutes, alors qu'ils attendent des données encodées puis normalisées. Sans normaliseur, la précision du modèle téléphone tombe de 89,6 % à 25,5 % (le hasard) et le R² du modèle taxi passe de 0,889 à −3,65.
+3. Réécriture de l'application : elle rejoue la chaîne exacte des notebooks (encodeurs, ordre des variables, normaliseur, modèle), affiche des libellés lisibles et prévient quand une saisie sort de la plage vue à l'entraînement. Ses prédictions ne s'écartent en rien de celles des notebooks sur 1 564 exemples de test.
+2. Les jeux de données
+Fichier
+Lignes × colonnes
+Cible
+Variables explicatives
+Particularités
+telephone_data.csv
+3 253 × 7
+etat (4 classes : D'occasion, Neuf, Réconditionné, Venant)
+prix, adresse (43 valeurs), marque (28), dim_ecr, ram, stockage
+Aucune valeur manquante. Valeurs extrêmes : dim_ecr de 0 à 75, ram de 1 à 512, stockage de 1 à 5 120, prix minimum de 1.
+Car_Data.csv
+5 507 × 6
+Venant_Occasion (2 classes, bien équilibrées)
+Marque (46), Année (1990 à 2024), Boite_Vitesse (3), Adresse, Prix
+Aucune valeur manquante. 182 écritures d'adresses pour 85 adresses réelles. Prix de 1 à 779 414 131, médiane 7,8 M.
+Car_dataset.csv
+5 861 × 7
+Selling_Price (numérique)
+Kms_Driven, Present_Price, Fuel_Type (3), Seller_Type (2), Transmission (2), Age
+Aucune valeur manquante.
+taxi_trip_pricing.csv
+1 000 × 11
+Trip_Price (numérique)
+Trip_Distance_km, Time_of_Day (4), Day_of_Week (2), Passenger_Count, Traffic_Conditions (3), Weather (3), Base_Fare, Per_Km_Rate, Per_Minute_Rate, Trip_Duration_Minutes
+50 valeurs manquantes par colonne (49 pour la cible).
+Les données téléphone et voiture viennent de Dakar (quartiers, prix en francs CFA, supposé). Les unités de Selling_Price, Present_Price et Trip_Price ne sont pas documentées : l'application les présente « dans l'unité du fichier » et ne suppose aucune devise.
+3. Les notebooks et leur personnalisation
+3.1 Fichiers reçus
+Quatre notebooks : classification des téléphones, classification des voitures (Venant ou D'occasion), régression du prix de voiture, régression du prix de course de taxi. Le notebook téléphone a été reçu deux fois : une version tronquée (5 cellules de code) et la version complète (65 cellules, exécutée seulement jusqu'à la cellule 21). Ce sont le même travail ; la version complète fait foi.
+3.2 Consigne
+Conserver le code à l'identique et ne personnaliser que les commentaires, les noms de fonctions et les noms de variables. Les chaînes affichées par print, les cellules markdown, les sorties enregistrées et les métadonnées sont restées intactes.
+3.3 Méthode
+• Renommage par analyse syntaxique (jetons Python, pas de remplacement de texte) : seuls les identificateurs sont modifiés, jamais le contenu des chaînes. Les noms de bibliothèques (from_pretrained, paramètres x= et y= de plotly, cv= de GridSearchCV, alias pd, np, plt) sont épargnés. Les variables à l'intérieur des f-strings sont renommées.
+• Commentaires réécrits un par un (146 commentaires distincts pour les quatre premiers notebooks, une quarantaine pour le suivant).
+• Convention : français, sans accents dans les identifiants (voir l'annexe A).
+3.4 Constat : des notebooks à moitié renommés
+Les définitions portaient déjà de nouveaux noms alors que les appels gardaient les anciens (par exemple quant_data_v2, countplot_func, encoder, scaler, evaluation, fig, df). Tels quels, les notebooks plantaient en cascade dès les premières cellules d'analyse. Les sorties enregistrées dans les fichiers prouvent qu'ils avaient pourtant tourné correctement avant ce renommage partiel.
+Pour que le résultat fonctionne, chaque ancien nom a été relié au nom déjà défini, puis à son nom final. Deux décisions dépassent le simple renommage et ont été signalées :
+• x_comptages = scaler.transform(x_val) (voiture et prix voiture) : jeton abîmé de x_val. Corrigé en x_validation = mise_a_echelle.transform(x_validation). Confirmé plus tard : avec la validation mise à l'échelle, on retrouve exactement l'exactitude de validation enregistrée (0,8113).
+• Notebook téléphone (cellules non exécutées) : model désignait selon la cellule l'arbre ou la forêt, et accu_ / f1_ servaient pour deux modèles. Ils ont été séparés en modele_arbre / modele_foret, exactitude_arbre / exactitude_foret et f1_arbre / f1_foret, comme dans le notebook voiture. number_data est devenu donnees_numeriques.
+3.5 Vérification
+Chaque notebook a été exécuté de bout en bout sur des données synthétiques de même structure que les CSV, en deux versions : « réconciliée seulement » (oracle) et « personnalisée ». Les sorties de toutes les cellules sont identiques, à une exception près : un chemin de dossier affiché par un print. Hors des sources, rien n'a changé (cellules, sorties, métadonnées).
+3.6 Laissé tel quel
+• Le notebook taxi évalue le modèle Ridge avec evaluer_modele(modele_reg_lineaire) : les scores attribués à Ridge sont ceux de la régression linéaire.
+• Les fautes de frappe dans les textes affichés (« categirielles », « varaibles ») sont des chaînes de caractères, donc du code.
+4. Prétraitement et entraînement
+Les quatre notebooks suivent le même schéma : nettoyage, encodage, traitement des valeurs aberrantes, séparation en variables explicatives et cible, découpage, normalisation, comparaison de modèles, sélection sur la validation, test, enregistrement.
+Étape
+Téléphone
+Voiture
+Prix voiture
+Taxi
+Nettoyage
+aucun
+Adresse : espaces autour de la virgule retirés, « Lac rose » unifié (182 → 85 valeurs)
+aucun
+aucun
+Manquantes catégorielles
+aucune
+aucune
+mode
+mode
+Encodage (LabelEncoder)
+adresse, marque, etat
+Marque, Boite_Vitesse, Adresse, cible
+Fuel_Type, Seller_Type, Transmission
+les 4 colonnes catégorielles
+Imputation KNN globale
+non
+non
+oui
+oui
+Valeurs aberrantes (IQR puis KNN)
+prix, dim_ecr, ram, stockage
+Année, Prix
+3 variables et la cible
+6 variables et la cible
+Découpage (random_state 42)
+80 / 10 / 10
+80 / 10 / 10
+80 / 10 / 10
+80 / 10 / 10
+Normaliseur
+MinMax, ajusté sur l'entraînement
+MinMax, entraînement
+Robust, entraînement
+Robust, tout le jeu avant découpage
+Sélection des modèles. Pour chaque jeu, plusieurs algorithmes sont comparés par GridSearchCV (KFold à 5 plis, mélange fixé) : régression logistique, arbre et forêt pour la classification ; régression linéaire, Ridge, arbre et forêt pour la régression. Le meilleur sur le jeu de validation (exactitude ou R²) est enregistré.
+Modèle enregistré
+Algorithme retenu
+Hyperparamètres
+telephone_model.joblib
+RandomForestClassifier
+50 arbres, profondeur 11
+voiture_model.joblib
+DecisionTreeClassifier
+critère entropy, profondeur 4
+prix_voiture_model.joblib
+RandomForestRegressor
+90 arbres, profondeur 14
+taxi_model.joblib
+RandomForestRegressor
+70 arbres, profondeur 9
+Chaque notebook enregistre dans models/ un fichier de modèle, l'ordre des variables (_features), les encodeurs (_encoders_v2) et le normaliseur (_scaler). Exception : le notebook téléphone n'enregistre pas ses encodeurs.
+5. Performances
+Modèle
+Entraînement
+Validation
+Test
+Exemples de test
+Téléphone (exactitude)
+0,946
+0,874
+0,896
+326
+Voiture (exactitude)
+0,811
+0,811
+0,784
+551
+Prix voiture (R²)
+0,965
+0,879
+0,905
+587
+Taxi (R²)
+0,973
+0,898
+0,889
+100
+Erreurs sur le jeu de test : prix voiture MAE 0,84 et RMSE 1,17 ; taxi MAE 5,37 et RMSE 7,98 (unités des cibles). Les valeurs voiture et prix voiture figurent dans les sorties des notebooks. Celles du téléphone et du taxi ont été recalculées, faute de sortie enregistrée. Le test taxi ne contient que 100 exemples : son estimation est peu précise.
+6. Analyse de l'application Streamlit d'origine
+L'application ne chargeait que le modèle et la liste des variables. Les problèmes, du plus grave au plus mineur :
+Problème
+Conséquence
+Ni encodeurs ni normaliseur
+Les modèles reçoivent des valeurs hors échelle. Sans normaliseur, sur le jeu de test : téléphone 25,5 % au lieu de 89,6 %, voiture 60,1 % au lieu de 78,4 %, prix voiture R² −0,04 au lieu de 0,905, taxi R² −3,65 au lieu de 0,889.
+Listes de choix inventées
+Villes marocaines et prix en DH au lieu de Dakar et FCFA ; codes 0 à 5 arbitraires alors que LabelEncoder code par ordre alphabétique. Carburant : Essence, Diesel, Électrique, Hybride contre CNG, Diesel, Petrol dans les données. Météo : Rainy, Snowy, Cloudy, Stormy contre Rain, Snow. Jour : 7 jours contre Weekday et Weekend.
+Nombres saisis par tranches
+Valeurs hors de ce que le modèle a vu : Base_Fare de 35 à 450 contre 2 à 5, Per_Km_Rate de 3 à 25 contre 0,5 à 2.
+Résultat non décodé
+Le téléphone affichait 1 au lieu de « Neuf ».
+Détails
+pickle.load au lieu de joblib.load ; DataFrame envoyé à des modèles entraînés sur des tableaux numpy ; use_container_width déprécié ; dossier models/ cherché relativement au dossier d'exécution ; erreurs affichées depuis une fonction mise en cache.
+7. Reconstruction et validation du prétraitement
+Les fichiers de normaliseurs et d'encodeurs n'avaient pas été fournis. Le prétraitement a donc été rejoué à l'identique depuis les CSV, puis comparé aux traces enregistrées dans les notebooks :
+• Lignes d'entraînement normalisées : les premières lignes recalculées pour voiture, prix voiture et taxi coïncident avec les tableaux imprimés dans les notebooks, jusqu'à la huitième décimale.
+• Scores : exactitude de validation voiture 0,8113 et de test 0,7840 ; R² de validation prix voiture 0,8787, de test 0,9046, MAE 0,84, RMSE 1,17. Tous retrouvés exactement.
+• Prédictions : les dix premières prédictions du jeu de test du prix voiture (12,54 ; 5,40 ; 12,12 ; 6,74 ; 7,38 ; 8,43 ; 5,40 ; 5,41 ; 4,65 ; 9,33) et les neuf premières de la voiture sont identiques aux sorties enregistrées.
+• Téléphone : aucune sortie de test enregistrée, mais une reconstruction fausse aurait donné une exactitude proche du hasard (25 %), et non 0,946 en entraînement et 0,896 en test.
+8. L'application corrigée (streamlit_app.py)
+8.1 Chaîne de prédiction
+saisie brute → encodeurs (LabelEncoder) → variables dans l'ordre de features → normaliseur → modèle → décodage du libellé (classification) ou valeur (régression).
+8.2 Fonctionnement
+• Listes de choix tirées des classes réellement apprises par les encodeurs ; libellés français pour les petites listes (météo, carburant, circulation, etc.), valeur brute conservée en interne.
+• Champs numériques avec bornes, pas et valeur par défaut sensés, et la plage vue à l'entraînement pour chaque variable.
+• Résultat lisible : libellé et probabilité de chaque classe pour les classifications ; valeur estimée pour les régressions ; rappel des performances du notebook sous le titre.
+• Avertissement hors plage : par exemple RAM = 4 Go signale que l'entraînement n'a vu que 7 à 16 Go.
+• Reconstruction de secours : si un fichier de features, d'encodeurs ou de normaliseur manque dans models/, l'application le reconstruit depuis le CSV (dossier data/), puis l'enregistre. C'est le cas des encodeurs du téléphone.
+• Contrôles de cohérence : ordre des variables comparé à la configuration, nombre de variables comparé à n_features_in_ du modèle, message d'erreur clair si le modèle est introuvable.
+• Formulaire : les champs ne relancent pas le calcul à chaque modification.
+8.3 Tests réalisés
+• Parcours complet des 4 modèles avec le framework de test de Streamlit (version 1.67.0, scikit-learn 1.9.1), sans exception.
+• Chemin « fichiers reconstruits » et chemin « fichiers relus depuis models/ » : les deux fonctionnent.
+• Équivalence avec les notebooks : pour chaque exemple de test (326 + 551 + 587 + 100 = 1 564), la fonction de prédiction de l'application donne le même résultat que modele.predict sur les données du notebook. Écart maximal 0, désaccord 0.
+• Cas limites : valeur hors plage (avertissement affiché) ; fichier de modèle absent (erreur explicite, pas de plantage).
+8.4 Mise en route
+projet/
+  streamlit_app.py
+  models/   (les 4 fichiers _model.joblib, et si possible features, encoders, scaler)
+  data/     (les 4 CSV, utiles seulement à la reconstruction)
+
+pip install streamlit scikit-learn pandas joblib
+streamlit run streamlit_app.py
+Utiliser la même version de scikit-learn que celle de l'entraînement.
+9. Limites et points d'attention
+Traitement des valeurs aberrantes (notebooks). La règle IQR est appliquée à toutes les colonnes numériques, y compris des variables discrètes, et écrase des valeurs légitimes :
+• Téléphone, RAM : Q1 = 11 et Q3 = 14 donnent des bornes de 6,5 à 18,5. 32,1 % des lignes sont déclarées aberrantes, dont les 295 téléphones à 8 Go. L'entraînement n'a vu que des RAM de 7 à 16. Taille d'écran : 8,3 % de lignes écrasées (entraînement : 5 à 8 pouces).
+• Voiture : années 2021 à 2024 écrasées (entraînement : 2009 à 2020) et prix plafonné à 24 M.
+• Prix voiture : âge entraîné de 2 à 16 ans alors que les données vont jusqu'à 22.
+• Dans les régressions, la cible elle-même est « nettoyée ».
+Fuite d'information. L'imputation KNN est ajustée sur tout le jeu avant le découpage (les quatre notebooks), et le normaliseur du taxi est ajusté sur tout le jeu. Les scores de test sont donc légèrement optimistes.
+Autres points.
+• Le notebook téléphone n'enregistre pas ses encodeurs (corrigé côté application par la reconstruction).
+• Les tests des notebooks ont été faits sur données synthétiques, pas sur les CSV réels ; la fidélité au réel a été établie ensuite par le rejeu sur les vrais CSV.
+• Je n'ai reçu que les quatre fichiers de modèle : les fichiers de features, d'encodeurs et de normaliseurs de ta machine n'ont pas été vus. L'application les utilisera s'ils existent.
+• Les prédictions sont fiables dans la plage d'entraînement ; en dehors, le résultat est une extrapolation.
+10. Recommandations
+1. Remplacer le traitement IQR global par un traitement ciblé : bornes métier, ou écrêtage des seules variables continues, jamais sur les variables discrètes (RAM, âge, année) ni sur la cible.
+2. Ajuster imputeurs et normaliseurs sur l'entraînement uniquement, après le découpage.
+3. Utiliser un Pipeline scikit-learn (ColumnTransformer avec encodeur et normaliseur, puis modèle) et n'enregistrer qu'un seul fichier par modèle : cette famille de bugs disparaît.
+4. Enregistrer les encodeurs dans le notebook téléphone, et épingler les versions de scikit-learn, pandas et streamlit dans un requirements.txt.
+5. Documenter les unités des cibles de prix voiture et taxi dans l'application.
+6. Corriger le notebook taxi pour que Ridge soit évalué avec son propre modèle.
+7. Agrandir le jeu de test taxi (100 exemples) avant de se fier à ses scores.
+Annexe A. Convention de noms
+Ancien nom (ou nom partiel)
+Nom final
+donnes, df
+jeu_donnees
+quant_data, variables_quantitatives
+donnees_numeriques
+cate_data, variables_categorielles
+donnees_categorielles
+countplot_func, process_fig_countplot
+tracer_diagramme_barres
+boxplot_func, process_fig_boxplot
+tracer_boite_moustaches
+process_input_func, impute_func
+traiter_valeurs_aberrantes
+evaluation
+evaluer_modele
+scaler, metteur_a_echelle
+mise_a_echelle
+encoders, encoders_v2
+encodeurs_par_colonne
+x, y
+caracteristiques, cible
+x_train, x_val, x_test
+x_entrainement, x_validation, x_test
+lg_model, tree_model, rf_model
+modele_reg_logistique, modele_arbre, modele_foret
+acc_lg, f1_lg
+exactitude_reg_logistique, f1_reg_logistique
+list_acc, list_names
+liste_exactitudes, noms_modeles
+Annexe B. Fichiers livrés
+• Cinq notebooks personnalisés (le notebook téléphone existe en version tronquée et en version complète), mêmes noms que les originaux.
+• streamlit_app.py : application corrigée.
